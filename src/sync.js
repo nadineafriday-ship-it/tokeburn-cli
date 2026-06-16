@@ -130,4 +130,4 @@ async function runSync(opts = {}, env = process.env) {
   return 0;
 }
 
-module.exports = { runSync };
+module.exports = { runSync, missingTokenMessage };

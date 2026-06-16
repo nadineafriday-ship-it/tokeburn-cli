@@ -60,6 +60,49 @@ Reads your local AI usage logs and POSTs the aggregated counts to Tokeburn.
 | `--token <token>` | Override the API token. |
 | `--url <url>` | Override the ingest URL. |
 
+### `tokeburn watch`
+
+Keeps your usage flowing automatically so the dashboard stays live for Claude
+Code and Codex without re-running `sync` by hand. On start it runs the same full
+`sync` once (catch-up / backfill), then watches your local log directories and
+re-syncs whenever they change — no need to leave a terminal babysitting it.
+
+```bash
+tokeburn watch
+```
+
+| Flag | Default | Description |
+| --- | --- | --- |
+| `--interval <seconds>` | `60` | Fallback poll interval. A sync runs at least this often regardless of filesystem events. |
+| `--lookback-days <days>` | `2` | How many days before today to re-sync on each change, to catch late writes. |
+| `--token <token>` | | Override the API token. |
+| `--url <url>` | | Override the ingest URL. |
+
+**How it works**
+
+- **Initial full sync.** Runs the existing one-shot `sync` once so you're
+  current immediately.
+- **Watch + poll.** Uses `fs.watch` on the directories the adapters already read
+  (Claude Code's `~/.claude/{projects,transcripts}` and Codex's
+  `$CODEX_HOME`/`~/.codex/{sessions,archived_sessions}`), plus a poll interval as
+  a safety net for events `fs.watch` can miss.
+- **Debounce.** Filesystem events are debounced (~2.5s) so a burst of writes from
+  a single agent turn collapses into one sync.
+- **Recent window only.** Each change re-syncs only **today + `--lookback-days`**,
+  not the full history. Ingest upserts by `(user, platform, model, date)`, so
+  repeated syncs of the same day are idempotent.
+- **Resilient.** A failed sync is logged and the loop keeps running; `Ctrl-C`
+  exits cleanly.
+
+Output is intentionally quiet: a `watching <dirs>` line on start and a short
+`synced N events at HH:MM:SS` line per sync.
+
+**Platform caveat:** `fs.watch` recursive mode is only supported on macOS and
+Windows. On Linux the watcher falls back to a shallow (non-recursive) watch, so
+deep writes (e.g. Codex's dated `sessions/YYYY/MM/DD/…` files) are caught by the
+poll interval rather than instantly. Lower `--interval` if you want tighter
+latency there. `sync` itself is unchanged.
+
 Other built-ins: `tokeburn --version`, `tokeburn --help`.
 
 The ingest URL is resolved in this order: `--url` flag → `TOKEBURN_API_URL`
