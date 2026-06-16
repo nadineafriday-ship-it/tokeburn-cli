@@ -6,6 +6,7 @@ const { postPayload } = require("./ingest");
 
 const PLATFORM_ANTHROPIC = "anthropic";
 const PLATFORM_OPENAI = "openai";
+const PLATFORM_OPENROUTER = "openrouter";
 
 /**
  * Today's date as YYYY-MM-DD (UTC), matching the adapters' date format.
@@ -119,6 +120,88 @@ function buildOpenAIRecord(response, now = new Date()) {
 }
 
 /**
+ * Build a Tokeburn usage record from an OpenRouter response.
+ *
+ * OpenRouter is consumed through the OpenAI SDK pointed at openrouter.ai, so the
+ * response is OpenAI-shaped: token normalization (including the cached-token
+ * subtraction) is identical, and we reuse buildOpenAIRecord wholesale. The only
+ * differences are:
+ *
+ *   - platform is tagged "openrouter" instead of "openai".
+ *   - OpenRouter reports the REAL dollar cost of the call in `usage.cost` (USD)
+ *     when usage accounting is enabled (see withUsageAccounting). When present
+ *     we surface it as the optional `cost_usd` field; when absent we omit it and
+ *     still send the tokens.
+ *
+ * Returns null when the response carries no usage (e.g. a streaming response).
+ *
+ * @param {object} response  An OpenRouter response (the resolved create() value).
+ * @param {Date}   [now]     Date used for the record (defaults to now).
+ */
+function buildOpenRouterRecord(response, now = new Date()) {
+  const record = buildOpenAIRecord(response, now);
+  if (!record) return null;
+
+  record.platform = PLATFORM_OPENROUTER;
+
+  // OpenRouter returns the actual dollar cost in usage.cost (USD). It's optional
+  // — only present when usage accounting is on — so set cost_usd only when it's
+  // a real number, otherwise omit it (tokens are still recorded).
+  const cost = response.usage.cost;
+  if (typeof cost === "number" && isFinite(cost)) {
+    record.cost_usd = cost;
+  }
+
+  return record;
+}
+
+/**
+ * Detect the platform for an OpenAI-shaped client (chat.completions / responses).
+ *
+ * OpenRouter clients are OpenAI clients pointed at openrouter.ai, so they're
+ * indistinguishable by shape — we disambiguate by `client.baseURL`: if it
+ * contains "openrouter.ai" the platform is "openrouter", otherwise "openai".
+ * `options.platform`, when provided, overrides the detection.
+ *
+ * @param {object} client
+ * @param {object} [options]
+ * @param {string} [options.platform]  Explicit override ("openai"/"openrouter").
+ * @returns {string} "openai" or "openrouter" (or the override, verbatim).
+ */
+function detectOpenAIPlatform(client, options = {}) {
+  if (typeof options.platform === "string" && options.platform) {
+    return options.platform;
+  }
+  const baseURL =
+    client && typeof client.baseURL === "string" ? client.baseURL : "";
+  return baseURL.includes("openrouter.ai")
+    ? PLATFORM_OPENROUTER
+    : PLATFORM_OPENAI;
+}
+
+/**
+ * Merge `{ usage: { include: true } }` into an OpenRouter create() call's args
+ * so the response carries usage accounting (token counts AND the dollar cost),
+ * WITHOUT overwriting any `usage` option the caller already set: caller-supplied
+ * usage keys win over our default. Returns a new args array; the original is
+ * left untouched.
+ */
+function withUsageAccounting(args) {
+  const first =
+    args[0] && typeof args[0] === "object" && !Array.isArray(args[0])
+      ? args[0]
+      : {};
+  const callerUsage =
+    first.usage && typeof first.usage === "object" ? first.usage : {};
+
+  const merged = {
+    ...first,
+    usage: { include: true, ...callerUsage },
+  };
+  return [merged, ...args.slice(1)];
+}
+
+/**
  * Capture usage from a response and POST it. Fire-and-forget: this is kept off
  * the critical path and MUST NOT throw into the caller's request. Any error
  * (no usage, no token, bad response, network failure) is swallowed and logged.
@@ -162,8 +245,11 @@ function logError(message) {
  * Patch a single `<holder>.create` method so each resolved response's usage is
  * forward-captured and POSTed via `buildRecordFn`, without touching the value
  * returned to the caller. Idempotent per holder. Returns true if it patched.
+ *
+ * `transformArgs`, when provided, rewrites the call arguments before they reach
+ * the original method (used by the OpenRouter path to enable usage accounting).
  */
-function patchCreate(holder, buildRecordFn, { token, apiUrl }) {
+function patchCreate(holder, buildRecordFn, { token, apiUrl, transformArgs }) {
   if (!holder || typeof holder.create !== "function") return false;
 
   // Idempotent: wrapping an already-wrapped method is a no-op.
@@ -172,7 +258,9 @@ function patchCreate(holder, buildRecordFn, { token, apiUrl }) {
   const originalCreate = holder.create.bind(holder);
 
   function patchedCreate(...args) {
-    const result = originalCreate(...args);
+    const callArgs =
+      typeof transformArgs === "function" ? transformArgs(args) : args;
+    const result = originalCreate(...callArgs);
 
     // Forward-capture without touching the returned value. Use a detached
     // promise so the user's call (and its return value) are unaffected.
@@ -206,6 +294,14 @@ function patchCreate(holder, buildRecordFn, { token, apiUrl }) {
  *   client.chat.completions.create   -> OpenAI Chat Completions (platform "openai")
  *   client.responses.create          -> OpenAI Responses     (platform "openai")
  *
+ * OpenRouter is used through the OpenAI SDK pointed at openrouter.ai, so its
+ * client is shape-identical to an OpenAI client. We disambiguate by inspecting
+ * `client.baseURL` (or an explicit `options.platform` override): a baseURL
+ * containing "openrouter.ai" tags records "openrouter" instead of "openai", and
+ * enables usage accounting on each call so OpenRouter returns the real dollar
+ * cost (surfaced as the optional `cost_usd` field). The Anthropic path is
+ * unaffected by detection.
+ *
  * The original response is returned UNCHANGED; the capture/POST happens after
  * it resolves, off the critical path, and never blocks or throws into the call.
  * v1 is non-streaming only — streaming responses carry no usage on the returned
@@ -219,6 +315,9 @@ function patchCreate(holder, buildRecordFn, { token, apiUrl }) {
  *   TOKEBURN_TOKEN / ~/.tokeburn config, the same resolution the CLI uses.
  * @param {string} [options.ingestUrl]  Ingest endpoint. Falls back through the
  *   CLI's resolution to the default Tokeburn ingest URL.
+ * @param {string} [options.platform]   Override for OpenAI-shaped clients —
+ *   "openai" or "openrouter". When omitted, the platform is detected from
+ *   `client.baseURL`. Has no effect on the Anthropic path.
  * @returns {object} The same client, with its supported create methods patched.
  */
 function withTokeburn(client, options = {}) {
@@ -233,16 +332,27 @@ function withTokeburn(client, options = {}) {
   const apiUrl = resolveApiUrl({ url: options.ingestUrl }, env);
   const ctx = { token, apiUrl };
 
+  // OpenAI-shaped clients (chat.completions / responses) may actually be talking
+  // to OpenRouter via openrouter.ai. Detect once, then pick the matching record
+  // builder; the OpenRouter path also enables usage accounting per call so the
+  // response carries token counts AND the real dollar cost.
+  const openaiPlatform = detectOpenAIPlatform(client, options);
+  const isOpenRouter = openaiPlatform === PLATFORM_OPENROUTER;
+  const openaiBuild = isOpenRouter ? buildOpenRouterRecord : buildOpenAIRecord;
+  const openaiCtx = isOpenRouter
+    ? { ...ctx, transformArgs: withUsageAccounting }
+    : ctx;
+
   // Duck-type the client and patch whichever create methods exist.
   const targets = [
-    [client.messages, buildRecord], // Anthropic
-    [client.chat && client.chat.completions, buildOpenAIRecord], // OpenAI Chat
-    [client.responses, buildOpenAIRecord], // OpenAI Responses
+    [client.messages, buildRecord, ctx], // Anthropic
+    [client.chat && client.chat.completions, openaiBuild, openaiCtx], // OpenAI/OpenRouter Chat
+    [client.responses, openaiBuild, openaiCtx], // OpenAI/OpenRouter Responses
   ];
 
   let patched = 0;
-  for (const [holder, build] of targets) {
-    if (patchCreate(holder, build, ctx)) patched++;
+  for (const [holder, build, holderCtx] of targets) {
+    if (patchCreate(holder, build, holderCtx)) patched++;
   }
 
   if (patched === 0) {
@@ -255,4 +365,9 @@ function withTokeburn(client, options = {}) {
   return client;
 }
 
-module.exports = { withTokeburn, buildRecord, buildOpenAIRecord };
+module.exports = {
+  withTokeburn,
+  buildRecord,
+  buildOpenAIRecord,
+  buildOpenRouterRecord,
+};
