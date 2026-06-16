@@ -143,14 +143,40 @@ await openai.chat.completions.create({
 await openai.responses.create({ model: "gpt-4.1", input: "Hello" });
 ```
 
+[OpenRouter](https://openrouter.ai) is used through the same OpenAI SDK, just
+pointed at `openrouter.ai`, so the same wrapper handles it too — it detects the
+provider from the client's base URL:
+
+```js
+import OpenAI from "openai";
+import { withTokeburn } from "tokeburn";
+
+const openrouter = withTokeburn(
+  new OpenAI({
+    baseURL: "https://openrouter.ai/api/v1",
+    apiKey: process.env.OPENROUTER_API_KEY,
+  })
+);
+
+// Tagged as `openrouter`, with the real dollar cost captured (see below).
+await openrouter.chat.completions.create({
+  model: "openai/gpt-4.1",
+  messages: [{ role: "user", content: "Hello" }],
+});
+```
+
 `withTokeburn` detects the client by duck-typing and patches every supported
 create method it finds:
 
 | Method | Platform |
 | --- | --- |
 | `client.messages.create` | `anthropic` |
-| `client.chat.completions.create` | `openai` (Chat Completions) |
-| `client.responses.create` | `openai` (Responses) |
+| `client.chat.completions.create` | `openai` / `openrouter` (Chat Completions) |
+| `client.responses.create` | `openai` / `openrouter` (Responses) |
+
+For OpenAI-shaped clients (`chat.completions` / `responses`), the platform is
+`openrouter` when `client.baseURL` contains `openrouter.ai`, otherwise `openai`.
+Pass `platform: "openai" | "openrouter"` to override the detection.
 
 After each create call resolves, the wrapper reads `response.usage` and
 `response.model`, builds a usage record, and POSTs it to the same Tokeburn
@@ -164,6 +190,7 @@ call, and failures are swallowed and logged only.
 | --- | --- |
 | `token` | Tokeburn API token. Falls back to `TOKEBURN_TOKEN`, then `~/.tokeburn/config.json` — the same resolution the CLI uses. |
 | `ingestUrl` | Override the ingest URL. Defaults through `TOKEBURN_API_URL` / config to the standard Tokeburn ingest endpoint. |
+| `platform` | Override the platform for OpenAI-shaped clients — `"openai"` or `"openrouter"`. When omitted, it's detected from `client.baseURL`. No effect on the Anthropic path. |
 
 Notes:
 
@@ -175,6 +202,14 @@ Notes:
   so a downstream `input_tokens + cache_read_tokens` never double-counts.
   OpenAI has no cache-write tokens, so `cache_creation_tokens` is always `0`.
   Anthropic's `input_tokens` is already cache-exclusive and maps straight across.
+- **OpenRouter reports a real dollar cost.** OpenRouter normalizes tokens
+  exactly like OpenAI (same cached-token subtraction), but it also returns the
+  actual cost of the call. The wrapper enables usage accounting on each call
+  (merging `{ usage: { include: true } }` into your request args without
+  clobbering any `usage` option you set), and surfaces `usage.cost` (USD) as the
+  optional `cost_usd` field on the record. If the response carries no cost,
+  `cost_usd` is omitted and the tokens are still sent. Only `openrouter` records
+  carry `cost_usd`; `anthropic` and `openai` records never do.
 - **Non-streaming only (v1).** Streaming responses carry no usage on the
   returned value and are skipped silently. Capturing streamed usage is a
   planned follow-up.
