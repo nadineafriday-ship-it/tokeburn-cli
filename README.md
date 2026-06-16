@@ -70,8 +70,8 @@ env → `apiUrl` in the config file → the default Tokeburn ingest endpoint.
 | Platform | Status |
 | --- | --- |
 | Claude Code | ✅ Supported |
+| Codex | ✅ Supported |
 | Cursor | 🔜 Coming soon |
-| Codex | 🔜 Coming soon |
 | GitHub Copilot | 🔜 Coming soon |
 
 ### Claude Code
@@ -81,6 +81,24 @@ The CLI reads Claude Code's per-session `.jsonl` logs under
 present), then aggregates token counts grouped by model and date.
 
 Set `TOKEBURN_CLAUDE_DIR` to point at a different `.claude` root (useful for
+testing).
+
+### Codex
+
+The CLI reads the Codex CLI's per-session `rollout-*.jsonl` logs (searched
+recursively under `sessions/` and `archived_sessions/`), then aggregates token
+counts grouped by model and date — the same shape as Claude Code.
+
+Codex `token_count` events don't carry the model name, so the model is taken
+from the most recent `turn_context` (or session metadata) seen earlier in the
+same session. Token events that appear before any model is known (older logs)
+are skipped rather than misattributed. The per-turn `last_token_usage` delta is
+used so summing across a session doesn't double-count its running total. Codex's
+`cached_input_tokens` maps to `cache_read_tokens`; there is no cache-creation
+equivalent.
+
+By default the logs are read from `~/.codex`. Set `CODEX_HOME` to point at a
+different Codex root (matches the Codex CLI's own convention; useful for
 testing).
 
 ## Payload shape
