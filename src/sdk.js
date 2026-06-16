@@ -4,7 +4,8 @@ const { resolveToken, resolveApiUrl } = require("./config");
 const { buildPayload } = require("./payload");
 const { postPayload } = require("./ingest");
 
-const PLATFORM = "anthropic";
+const PLATFORM_ANTHROPIC = "anthropic";
+const PLATFORM_OPENAI = "openai";
 
 /**
  * Today's date as YYYY-MM-DD (UTC), matching the adapters' date format.
@@ -18,13 +19,24 @@ function toCount(value) {
 }
 
 /**
+ * First finite number among the candidates, or 0. Used to read a count that two
+ * API shapes name differently (e.g. prompt_tokens vs input_tokens).
+ */
+function firstNumber(...values) {
+  for (const v of values) {
+    if (typeof v === "number" && isFinite(v)) return v;
+  }
+  return 0;
+}
+
+/**
  * Build a Tokeburn usage record from an Anthropic Messages response.
  *
  * Returns null when the response carries no usage (e.g. a streaming response),
  * so the caller can skip it silently.
  *
  * Anthropic's `usage.input_tokens` is already exclusive of cached tokens, so —
- * unlike the Codex adapter — no subtraction is needed: cache_read and
+ * unlike the Codex/OpenAI paths — no subtraction is needed: cache_read and
  * cache_creation map straight across from their `*_input_tokens` fields.
  *
  * @param {object} response  An Anthropic message (the resolved create() value).
@@ -41,7 +53,7 @@ function buildRecord(response, now = new Date()) {
       : "unknown";
 
   return {
-    platform: PLATFORM,
+    platform: PLATFORM_ANTHROPIC,
     model,
     date: todayDate(now),
     input_tokens: toCount(usage.input_tokens),
@@ -52,16 +64,73 @@ function buildRecord(response, now = new Date()) {
 }
 
 /**
+ * Build a Tokeburn usage record from an OpenAI response — handling both
+ * Chat Completions (`chat.completions.create`) and Responses
+ * (`responses.create`), which name the same counts differently:
+ *
+ *   Chat Completions: prompt_tokens, completion_tokens,
+ *                     prompt_tokens_details.cached_tokens
+ *   Responses:        input_tokens, output_tokens,
+ *                     input_tokens_details.cached_tokens
+ *
+ * Returns null when the response carries no usage (e.g. a streaming response).
+ *
+ * Like Codex (and UNLIKE Anthropic), OpenAI's prompt/input count INCLUDES the
+ * cached tokens. We follow the Anthropic convention used throughout Tokeburn —
+ * input_tokens is EXCLUSIVE of cache, with the cached portion recorded
+ * separately in cache_read_tokens — so a downstream
+ * (input_tokens + cache_read_tokens) sum never double-counts the cache. There
+ * is no OpenAI cache-write equivalent, so cache_creation_tokens stays 0.
+ *
+ * @param {object} response  An OpenAI response (the resolved create() value).
+ * @param {Date}   [now]     Date used for the record (defaults to now).
+ */
+function buildOpenAIRecord(response, now = new Date()) {
+  if (!response || typeof response !== "object") return null;
+  const usage = response.usage;
+  if (!usage || typeof usage !== "object") return null;
+
+  const model =
+    typeof response.model === "string" && response.model
+      ? response.model
+      : "unknown";
+
+  // Chat Completions uses prompt_/completion_; Responses uses input_/output_.
+  const promptTokens = firstNumber(usage.prompt_tokens, usage.input_tokens);
+  const completionTokens = firstNumber(usage.completion_tokens, usage.output_tokens);
+
+  const details =
+    usage.prompt_tokens_details || usage.input_tokens_details || {};
+  const cached = toCount(details.cached_tokens);
+
+  // Subtract the cached portion out of the prompt/input count so input_tokens
+  // is exclusive of cache (cached lives in cache_read_tokens).
+  const inputExclusive = Math.max(0, promptTokens - cached);
+
+  return {
+    platform: PLATFORM_OPENAI,
+    model,
+    date: todayDate(now),
+    input_tokens: toCount(inputExclusive),
+    output_tokens: toCount(completionTokens),
+    cache_read_tokens: cached,
+    cache_creation_tokens: 0,
+  };
+}
+
+/**
  * Capture usage from a response and POST it. Fire-and-forget: this is kept off
  * the critical path and MUST NOT throw into the caller's request. Any error
  * (no usage, no token, bad response, network failure) is swallowed and logged.
  *
+ * `buildRecordFn` maps the platform-specific response into a Tokeburn record.
+ *
  * Returns the in-flight Promise so callers/tests can await completion if they
  * want to; the wrapper itself never awaits it.
  */
-async function captureAndSend(response, { token, apiUrl }) {
+async function captureAndSend(response, buildRecordFn, { token, apiUrl }) {
   try {
-    const record = buildRecord(response);
+    const record = buildRecordFn(response);
     if (!record) return; // no usage (e.g. streaming) — skip silently
 
     if (!token) {
@@ -90,47 +159,17 @@ function logError(message) {
 }
 
 /**
- * Wrap an Anthropic Node client so every `messages.create` call's token usage
- * is forward-captured and POSTed to Tokeburn, reusing the CLI's payload format
- * and ingest path (source "sdk").
- *
- * The original response is returned UNCHANGED; the capture/POST happens after
- * it resolves, off the critical path, and never blocks or throws into the call.
- * v1 is non-streaming only — streaming responses carry no usage on the returned
- * object and are skipped silently. (Streaming support is a follow-up: it would
- * need to read usage from the terminal message_delta / final-message event.)
- *
- * No runtime dependency on the Anthropic SDK — the client is duck-typed.
- *
- * @param {object} client   An Anthropic-like client with `messages.create`.
- * @param {object} [options]
- * @param {string} [options.token]      Tokeburn API token. Falls back to
- *   TOKEBURN_TOKEN / ~/.tokeburn config, the same resolution the CLI uses.
- * @param {string} [options.ingestUrl]  Ingest endpoint. Falls back through the
- *   CLI's resolution to the default Tokeburn ingest URL.
- * @returns {object} The same client, with `messages.create` patched.
+ * Patch a single `<holder>.create` method so each resolved response's usage is
+ * forward-captured and POSTed via `buildRecordFn`, without touching the value
+ * returned to the caller. Idempotent per holder. Returns true if it patched.
  */
-function withTokeburn(client, options = {}) {
-  if (!client || typeof client !== "object") {
-    throw new TypeError(
-      "withTokeburn(client): client must be an Anthropic-like object"
-    );
-  }
-  const messages = client.messages;
-  if (!messages || typeof messages.create !== "function") {
-    throw new TypeError(
-      "withTokeburn(client): client.messages.create must be a function"
-    );
-  }
+function patchCreate(holder, buildRecordFn, { token, apiUrl }) {
+  if (!holder || typeof holder.create !== "function") return false;
 
-  // Idempotent: wrapping an already-wrapped client is a no-op.
-  if (messages.create.__tokeburnWrapped) return client;
+  // Idempotent: wrapping an already-wrapped method is a no-op.
+  if (holder.create.__tokeburnWrapped) return true;
 
-  const env = options.env || process.env;
-  const token = resolveToken({ token: options.token }, env);
-  const apiUrl = resolveApiUrl({ url: options.ingestUrl }, env);
-
-  const originalCreate = messages.create.bind(messages);
+  const originalCreate = holder.create.bind(holder);
 
   function patchedCreate(...args) {
     const result = originalCreate(...args);
@@ -139,7 +178,7 @@ function withTokeburn(client, options = {}) {
     // promise so the user's call (and its return value) are unaffected.
     Promise.resolve(result).then(
       (response) => {
-        captureAndSend(response, { token, apiUrl });
+        captureAndSend(response, buildRecordFn, { token, apiUrl });
       },
       () => {
         // The user's own call rejected — nothing to capture, and the
@@ -151,8 +190,69 @@ function withTokeburn(client, options = {}) {
   }
   patchedCreate.__tokeburnWrapped = true;
 
-  messages.create = patchedCreate;
+  holder.create = patchedCreate;
+  return true;
+}
+
+/**
+ * Wrap a supported AI Node client so every supported `create` call's token
+ * usage is forward-captured and POSTed to Tokeburn, reusing the CLI's payload
+ * format and ingest path (source "sdk").
+ *
+ * The client is detected by duck-typing, and whichever create methods are
+ * present get patched (all of them, if more than one exists):
+ *
+ *   client.messages.create           -> Anthropic Messages   (platform "anthropic")
+ *   client.chat.completions.create   -> OpenAI Chat Completions (platform "openai")
+ *   client.responses.create          -> OpenAI Responses     (platform "openai")
+ *
+ * The original response is returned UNCHANGED; the capture/POST happens after
+ * it resolves, off the critical path, and never blocks or throws into the call.
+ * v1 is non-streaming only — streaming responses carry no usage on the returned
+ * object and are skipped silently. (Streaming support is a follow-up.)
+ *
+ * No runtime dependency on the Anthropic or OpenAI SDKs — clients are duck-typed.
+ *
+ * @param {object} client   An Anthropic-like or OpenAI-like client.
+ * @param {object} [options]
+ * @param {string} [options.token]      Tokeburn API token. Falls back to
+ *   TOKEBURN_TOKEN / ~/.tokeburn config, the same resolution the CLI uses.
+ * @param {string} [options.ingestUrl]  Ingest endpoint. Falls back through the
+ *   CLI's resolution to the default Tokeburn ingest URL.
+ * @returns {object} The same client, with its supported create methods patched.
+ */
+function withTokeburn(client, options = {}) {
+  if (!client || typeof client !== "object") {
+    throw new TypeError(
+      "withTokeburn(client): client must be an Anthropic-like or OpenAI-like object"
+    );
+  }
+
+  const env = options.env || process.env;
+  const token = resolveToken({ token: options.token }, env);
+  const apiUrl = resolveApiUrl({ url: options.ingestUrl }, env);
+  const ctx = { token, apiUrl };
+
+  // Duck-type the client and patch whichever create methods exist.
+  const targets = [
+    [client.messages, buildRecord], // Anthropic
+    [client.chat && client.chat.completions, buildOpenAIRecord], // OpenAI Chat
+    [client.responses, buildOpenAIRecord], // OpenAI Responses
+  ];
+
+  let patched = 0;
+  for (const [holder, build] of targets) {
+    if (patchCreate(holder, build, ctx)) patched++;
+  }
+
+  if (patched === 0) {
+    throw new TypeError(
+      "withTokeburn(client): client must expose at least one supported create() " +
+        "method (messages.create, chat.completions.create, or responses.create)"
+    );
+  }
+
   return client;
 }
 
-module.exports = { withTokeburn, buildRecord };
+module.exports = { withTokeburn, buildRecord, buildOpenAIRecord };

@@ -101,12 +101,12 @@ By default the logs are read from `~/.codex`. Set `CODEX_HOME` to point at a
 different Codex root (matches the Codex CLI's own convention; useful for
 testing).
 
-## SDK: wrap your Anthropic client
+## SDK: wrap your Anthropic or OpenAI client
 
 If you call the [Anthropic Node SDK](https://www.npmjs.com/package/@anthropic-ai/sdk)
-directly from your own code, you can have Tokeburn capture token usage from
-every API call automatically — no log files, no `sync` command. Wrap your
-client once:
+or the [OpenAI Node SDK](https://www.npmjs.com/package/openai) directly from
+your own code, you can have Tokeburn capture token usage from every API call
+automatically — no log files, no `sync` command. Wrap your client once:
 
 ```js
 import Anthropic from "@anthropic-ai/sdk";
@@ -124,8 +124,36 @@ const message = await client.messages.create({
 });
 ```
 
-After each `messages.create` call resolves, the wrapper reads `response.usage`
-and `response.model`, builds a usage record, and POSTs it to the same Tokeburn
+The same wrapper works for the OpenAI client and patches whichever create
+methods are present:
+
+```js
+import OpenAI from "openai";
+import { withTokeburn } from "tokeburn";
+
+const openai = withTokeburn(new OpenAI());
+
+// Chat Completions...
+await openai.chat.completions.create({
+  model: "gpt-4.1",
+  messages: [{ role: "user", content: "Hello" }],
+});
+
+// ...and the Responses API are both captured.
+await openai.responses.create({ model: "gpt-4.1", input: "Hello" });
+```
+
+`withTokeburn` detects the client by duck-typing and patches every supported
+create method it finds:
+
+| Method | Platform |
+| --- | --- |
+| `client.messages.create` | `anthropic` |
+| `client.chat.completions.create` | `openai` (Chat Completions) |
+| `client.responses.create` | `openai` (Responses) |
+
+After each create call resolves, the wrapper reads `response.usage` and
+`response.model`, builds a usage record, and POSTs it to the same Tokeburn
 ingest endpoint the CLI uses (with `source: "sdk"`). This happens
 fire-and-forget, off the critical path: it never blocks or throws into your
 call, and failures are swallowed and logged only.
@@ -139,12 +167,20 @@ call, and failures are swallowed and logged only.
 
 Notes:
 
+- **Cached tokens are subtracted out of the input count for OpenAI.** Both
+  OpenAI APIs bundle cached tokens inside the prompt/input count
+  (`prompt_tokens` / `input_tokens`), so the wrapper subtracts
+  `cached_tokens` and records it separately under `cache_read_tokens`. This
+  keeps `input_tokens` exclusive of cache — matching the Anthropic convention —
+  so a downstream `input_tokens + cache_read_tokens` never double-counts.
+  OpenAI has no cache-write tokens, so `cache_creation_tokens` is always `0`.
+  Anthropic's `input_tokens` is already cache-exclusive and maps straight across.
 - **Non-streaming only (v1).** Streaming responses carry no usage on the
-  returned value and are skipped silently. Capturing streamed usage (from the
-  terminal `message_delta` / final-message event) is a planned follow-up.
-- **No dependency on the Anthropic SDK.** The client is duck-typed — the
-  wrapper only needs a `messages.create` method, so `tokeburn` adds no runtime
-  dependency on `@anthropic-ai/sdk`.
+  returned value and are skipped silently. Capturing streamed usage is a
+  planned follow-up.
+- **No dependency on the Anthropic or OpenAI SDK.** Clients are duck-typed —
+  the wrapper only needs the relevant `create` method, so `tokeburn` adds no
+  runtime dependency on `@anthropic-ai/sdk` or `openai`.
 
 ## Payload shape
 
