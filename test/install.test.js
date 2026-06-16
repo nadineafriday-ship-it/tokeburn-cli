@@ -130,6 +130,16 @@ test("install persists the token to config.json for unattended runs", async () =
   assert.equal(cfg.token, "tok_secret");
 });
 
+test("install writes config.json owner-readable only (mode 0600)", async () => {
+  const home = tempHome();
+  const deps = baseDeps(home, { token: "tok_secret" });
+
+  await runInstall({ token: "tok_secret" }, deps);
+
+  const stat = fs.statSync(path.join(home, ".tokeburn", "config.json"));
+  assert.equal(stat.mode & 0o777, 0o600);
+});
+
 // --- install: interval default + --minutes override ------------------------
 
 test("install uses the 300s default interval", async () => {

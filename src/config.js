@@ -47,7 +47,8 @@ function readConfigFile(homedir = os.homedir()) {
  */
 function saveConfig(updates = {}, homedir = os.homedir()) {
   const dir = configDir(homedir);
-  fs.mkdirSync(dir, { recursive: true });
+  // Owner-only directory (0700) so the stored token isn't world/group readable.
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   const existing = readConfigFile(homedir);
   const merged = { ...existing, ...updates };
   fs.writeFileSync(
