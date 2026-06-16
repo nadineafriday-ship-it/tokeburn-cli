@@ -241,13 +241,20 @@ function collect(env = process.env) {
         agg.set(key, rec);
       }
 
-      rec.input_tokens += toCount(usage.input_tokens);
-      rec.output_tokens += toCount(usage.output_tokens);
-      // Codex reports the cached portion of the prompt as cached_input_tokens;
-      // map it to cache_read_tokens. There is no Codex equivalent of cache
-      // creation, so cache_creation_tokens stays 0. reasoning_output_tokens is
+      const input = toCount(usage.input_tokens);
+      const cached = toCount(usage.cached_input_tokens);
+      // Codex's input_tokens INCLUDES the cached portion (cached_input_tokens is
+      // a subset of input_tokens). The Claude Code adapter follows the Anthropic
+      // convention where input_tokens is EXCLUSIVE of cache and the cached count
+      // lives separately in cache_read_tokens, so a downstream
+      // (input_tokens + cache_read_tokens) sum never double-counts the cache.
+      // Match that convention: subtract the cached portion out of input and
+      // record it under cache_read_tokens. There is no Codex cache-creation
+      // equivalent, so cache_creation_tokens stays 0. reasoning_output_tokens is
       // a subset of output_tokens and is not added again.
-      rec.cache_read_tokens += toCount(usage.cached_input_tokens);
+      rec.input_tokens += Math.max(0, input - cached);
+      rec.output_tokens += toCount(usage.output_tokens);
+      rec.cache_read_tokens += cached;
     }
   }
 
