@@ -1,0 +1,2 @@
+{"timestamp":"2026-06-11T09:00:00.000Z","type":"turn_context","payload":{"cwd":"/home/user/proj","model":"gpt-4.1-mini","effort":"low","summary":"auto"}}
+{"timestamp":"2026-06-11T09:00:01.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":40,"cached_input_tokens":0,"output_tokens":20,"reasoning_output_tokens":0,"total_tokens":60},"last_token_usage":{"input_tokens":40,"cached_input_tokens":0,"output_tokens":20,"reasoning_output_tokens":0,"total_tokens":60}}}}
