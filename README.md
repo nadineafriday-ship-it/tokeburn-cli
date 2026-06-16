@@ -101,6 +101,51 @@ By default the logs are read from `~/.codex`. Set `CODEX_HOME` to point at a
 different Codex root (matches the Codex CLI's own convention; useful for
 testing).
 
+## SDK: wrap your Anthropic client
+
+If you call the [Anthropic Node SDK](https://www.npmjs.com/package/@anthropic-ai/sdk)
+directly from your own code, you can have Tokeburn capture token usage from
+every API call automatically — no log files, no `sync` command. Wrap your
+client once:
+
+```js
+import Anthropic from "@anthropic-ai/sdk";
+import { withTokeburn } from "tokeburn";
+
+const client = withTokeburn(new Anthropic(), {
+  token: process.env.TOKEBURN_TOKEN, // optional — see resolution below
+});
+
+// Use the client exactly as before. The response is returned unchanged.
+const message = await client.messages.create({
+  model: "claude-opus-4-8",
+  max_tokens: 1024,
+  messages: [{ role: "user", content: "Hello" }],
+});
+```
+
+After each `messages.create` call resolves, the wrapper reads `response.usage`
+and `response.model`, builds a usage record, and POSTs it to the same Tokeburn
+ingest endpoint the CLI uses (with `source: "sdk"`). This happens
+fire-and-forget, off the critical path: it never blocks or throws into your
+call, and failures are swallowed and logged only.
+
+`withTokeburn(client, options)`:
+
+| Option | Description |
+| --- | --- |
+| `token` | Tokeburn API token. Falls back to `TOKEBURN_TOKEN`, then `~/.tokeburn/config.json` — the same resolution the CLI uses. |
+| `ingestUrl` | Override the ingest URL. Defaults through `TOKEBURN_API_URL` / config to the standard Tokeburn ingest endpoint. |
+
+Notes:
+
+- **Non-streaming only (v1).** Streaming responses carry no usage on the
+  returned value and are skipped silently. Capturing streamed usage (from the
+  terminal `message_delta` / final-message event) is a planned follow-up.
+- **No dependency on the Anthropic SDK.** The client is duck-typed — the
+  wrapper only needs a `messages.create` method, so `tokeburn` adds no runtime
+  dependency on `@anthropic-ai/sdk`.
+
 ## Payload shape
 
 ```json

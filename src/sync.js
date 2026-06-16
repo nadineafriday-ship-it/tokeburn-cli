@@ -4,6 +4,7 @@ const pc = require("picocolors");
 const { resolveToken, resolveApiUrl } = require("./config");
 const { collectAll } = require("./adapters");
 const { buildPayload, summarize } = require("./payload");
+const { postPayload } = require("./ingest");
 
 function fmt(n) {
   return Number(n || 0).toLocaleString("en-US");
@@ -97,14 +98,7 @@ async function runSync(opts = {}, env = process.env) {
 
   let response;
   try {
-    response = await fetch(apiUrl, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(payload),
-    });
+    response = await postPayload(payload, { token, apiUrl });
   } catch (err) {
     console.error("");
     console.error(pc.red("Could not reach Tokeburn: ") + (err && err.message ? err.message : String(err)));
