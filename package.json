@@ -1,6 +1,6 @@
 {
   "name": "tokeburn",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Sync your local AI coding-tool token usage into Tokeburn.",
   "type": "commonjs",
   "main": "index.js",
