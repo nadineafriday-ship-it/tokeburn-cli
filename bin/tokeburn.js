@@ -10,6 +10,7 @@ const {
   DEFAULT_INTERVAL_SECONDS,
   DEFAULT_LOOKBACK_DAYS,
 } = require("../src/watch");
+const { runInstall, runUninstall } = require("../src/install");
 
 const program = new Command();
 
@@ -55,6 +56,40 @@ program
   .action(async (opts) => {
     try {
       const code = await runWatch(opts);
+      process.exitCode = code;
+    } catch (err) {
+      console.error(pc.red("Unexpected error: ") + (err && err.message ? err.message : String(err)));
+      process.exitCode = 1;
+    }
+  });
+
+program
+  .command("install")
+  .description(
+    "Set up background auto-sync (macOS): run once and Tokeburn keeps syncing on its own."
+  )
+  .option(
+    "--minutes <minutes>",
+    "how often the background job runs, in minutes (default 5)"
+  )
+  .option("--token <token>", "override the Tokeburn API token")
+  .option("--url <url>", "override the Tokeburn ingest URL")
+  .action(async (opts) => {
+    try {
+      const code = await runInstall(opts);
+      process.exitCode = code;
+    } catch (err) {
+      console.error(pc.red("Unexpected error: ") + (err && err.message ? err.message : String(err)));
+      process.exitCode = 1;
+    }
+  });
+
+program
+  .command("uninstall")
+  .description("Remove background auto-sync (macOS): stop and delete the scheduled job.")
+  .action(async (opts) => {
+    try {
+      const code = await runUninstall(opts);
       process.exitCode = code;
     } catch (err) {
       console.error(pc.red("Unexpected error: ") + (err && err.message ? err.message : String(err)));
