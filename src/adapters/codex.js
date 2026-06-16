@@ -28,6 +28,16 @@ function codexRoot(env = process.env) {
 }
 
 /**
+ * The directories this adapter reads. Exposed so `tokeburn watch` can put a
+ * filesystem watcher on exactly the directories the adapter parses, without
+ * having to know Codex's on-disk layout.
+ */
+function dirs(env = process.env) {
+  const root = codexRoot(env);
+  return [path.join(root, "sessions"), path.join(root, "archived_sessions")];
+}
+
+/**
  * Recursively collect rollout-*.jsonl files under a directory.
  * Returns [] if the directory is missing or unreadable.
  */
@@ -155,10 +165,9 @@ function extractUsage(obj) {
  * Never throws on bad input.
  */
 function collect(env = process.env) {
-  const root = codexRoot(env);
   const notes = [];
 
-  const searchDirs = [path.join(root, "sessions"), path.join(root, "archived_sessions")];
+  const searchDirs = dirs(env);
   const rolloutFiles = [];
   for (const dir of searchDirs) {
     rolloutFiles.push(...findRolloutFiles(dir));
@@ -276,4 +285,4 @@ function collect(env = process.env) {
   return { records, notes };
 }
 
-module.exports = { platform: PLATFORM, collect };
+module.exports = { platform: PLATFORM, collect, dirs };

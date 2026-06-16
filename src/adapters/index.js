@@ -30,4 +30,29 @@ function collectAll(env = process.env) {
   return { records, notes };
 }
 
-module.exports = { adapters, collectAll };
+/**
+ * The set of local log directories the adapters read, across every adapter that
+ * exposes a `dirs(env)` function. Used by `tokeburn watch` to place filesystem
+ * watchers. Adapters without a `dirs` function (stubs) contribute nothing.
+ * Returns a de-duplicated list of directory paths (which may not all exist yet).
+ */
+function watchDirs(env = process.env) {
+  const seen = new Set();
+  for (const adapter of adapters) {
+    if (typeof adapter.dirs !== "function") continue;
+    let dirs;
+    try {
+      dirs = adapter.dirs(env);
+    } catch (err) {
+      // A misbehaving adapter should not break watch setup.
+      continue;
+    }
+    if (!Array.isArray(dirs)) continue;
+    for (const d of dirs) {
+      if (typeof d === "string" && d) seen.add(d);
+    }
+  }
+  return Array.from(seen);
+}
+
+module.exports = { adapters, collectAll, watchDirs };
