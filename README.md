@@ -103,6 +103,55 @@ deep writes (e.g. Codex's dated `sessions/YYYY/MM/DD/…` files) are caught by t
 poll interval rather than instantly. Lower `--interval` if you want tighter
 latency there. `sync` itself is unchanged.
 
+### `tokeburn install` (macOS)
+
+Set up background auto-sync once and Tokeburn keeps syncing on its own — no
+terminal to leave running, no commands to remember.
+
+```bash
+tokeburn install --token <your-token>
+```
+
+| Flag | Default | Description |
+| --- | --- | --- |
+| `--minutes <minutes>` | `5` | How often the background job runs. |
+| `--token <token>` | — | Override the Tokeburn API token. |
+| `--url <url>` | — | Override the Tokeburn ingest URL. |
+
+What it does:
+
+- **Persists your token.** Saves it to `~/.tokeburn/config.json` so the
+  unattended job authenticates the same way `sync` does (a launchd job runs with
+  a minimal environment and can't see your shell's env vars).
+- **Runs an initial sync.** Reuses the existing `sync` so you're current right
+  away.
+- **Installs a launchd LaunchAgent.** Writes
+  `~/Library/LaunchAgents/app.tokeburn.sync.plist` that runs `tokeburn sync`
+  every `--minutes` (and once at load), using absolute paths to the node binary
+  and CLI so it works under launchd. stdout/stderr go to `~/.tokeburn/sync.log`.
+  Re-running `install` is idempotent — the old job is unloaded before the new one
+  is written.
+
+On success it prints, e.g.:
+`Connected. Tokeburn will keep itself updated every 5 minutes.`
+
+If the launchd step fails for any reason it never blocks onboarding: your initial
+sync still counts, and it tells you in plain language to keep data fresh with
+`tokeburn watch`.
+
+### `tokeburn uninstall` (macOS)
+
+```bash
+tokeburn uninstall
+```
+
+Unloads the launchd job and removes the plist. Safe to run even if nothing is
+installed.
+
+**Platform support:** background auto-sync is macOS-only for now. On other
+platforms both commands print a friendly note and exit cleanly, pointing you at
+`tokeburn watch` in the meantime.
+
 Other built-ins: `tokeburn --version`, `tokeburn --help`.
 
 The ingest URL is resolved in this order: `--url` flag → `TOKEBURN_API_URL`
