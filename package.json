@@ -3,10 +3,15 @@
   "version": "0.2.0",
   "description": "Sync your local AI coding-tool token usage into Tokeburn.",
   "type": "commonjs",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js"
+  },
   "bin": {
     "tokeburn": "bin/tokeburn.js"
   },
   "files": [
+    "index.js",
     "bin/",
     "src/",
     "README.md"

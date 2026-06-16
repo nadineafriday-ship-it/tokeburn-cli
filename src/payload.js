@@ -4,10 +4,16 @@ const pkg = require("../package.json");
 
 /**
  * Build the ingest payload from collected usage records.
+ *
+ * @param {Array} records  Usage records to send.
+ * @param {object} [opts]
+ * @param {Date}   [opts.now]     Timestamp for `synced_at` (defaults to now).
+ * @param {string} [opts.source]  Origin of the payload — "cli" (the default,
+ *   used by `tokeburn sync`) or "sdk" (used by the SDK wrapper).
  */
-function buildPayload(records, now = new Date()) {
+function buildPayload(records, { now = new Date(), source = "cli" } = {}) {
   return {
-    source: "cli",
+    source,
     cli_version: pkg.version,
     synced_at: now.toISOString(),
     usage: records,
