@@ -1,0 +1,33 @@
+{
+  "name": "tokeburn",
+  "version": "0.1.1",
+  "description": "Sync your local AI coding-tool token usage into Tokeburn.",
+  "type": "commonjs",
+  "bin": {
+    "tokeburn": "bin/tokeburn.js"
+  },
+  "files": [
+    "bin/",
+    "src/",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "tokeburn",
+    "ai",
+    "tokens",
+    "usage",
+    "claude",
+    "cli"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "commander": "^12.1.0",
+    "picocolors": "^1.1.1"
+  }
+}
